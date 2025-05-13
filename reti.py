@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Retigabine user-extraction (defensive v1.1)
+Retigabine user-extraction  •  defensive v1.2
 Thread: https://www.tinnitustalk.com/threads/retigabine-trobalt-potiga-—-general-discussion.5074/
 
 Dependencies:
@@ -30,13 +30,16 @@ HEADERS = {
 }
 
 # -------------------------------------------------------------------------
-def iter_pages():
-    """Yield raw HTML for every page until XenForo stops returning posts."""
+def iter_pages(max_pages: int = 1000):
+    """
+    Yield raw HTML for every page in the thread.
+    Stops when:  • HTTP error  • no <article> tags  • no ‘next page’ link
+    """
     scraper = cloudscraper.create_scraper()
     scraper.headers.update(HEADERS)
 
     page = 1
-    while True:
+    while page <= max_pages:
         url = BASE_URL if page == 1 else f"{BASE_URL}page-{page}"
         resp = scraper.get(url, timeout=30)
         print(f"[fetch] {url} -> {resp.status_code}")
@@ -44,13 +47,24 @@ def iter_pages():
         if resp.status_code >= 400:
             print("[stop] HTTP error.")
             break
+
         if "<article" not in resp.text.lower():
             print("[stop] No <article> tags found.")
             break
 
+        soup = BeautifulSoup(resp.text, "html.parser")
         yield resp.text
+
+        # --------- look for “next page” nav link --------- #
+        next_link = soup.select_one(
+            "a[rel='next'], a.pageNav-jump--next"
+        )
+        if not next_link:
+            print("[stop] Reached last page (no next-page link).")
+            break
+
         page += 1
-        time.sleep(1)            # 1 req/s politeness
+        time.sleep(1)                      # be polite: 1 request/sec
 
 # -------------------------------------------------------------------------
 DRUG_NAMES = r"(?:retigabine|trobalt|potiga|rtb)"
@@ -72,7 +86,7 @@ NEG_RE = re.compile(
 )
 
 def mentions_use(text: str) -> bool:
-    """True if the post shows the author actually used retigabine."""
+    """True if the post indicates the author actually used retigabine."""
     if NEG_RE.search(text):
         return False
     return bool(
@@ -87,7 +101,7 @@ def extract_users():
     for html in iter_pages():
         soup = BeautifulSoup(html, "html.parser")
         for art in soup.select("article"):
-            # strip quoted text to avoid false positives
+            # strip quoted text
             for q in art.select("blockquote"):
                 q.decompose()
             body = art.get_text(" ", strip=True)
@@ -96,20 +110,14 @@ def extract_users():
 
             # ---------- robust author extraction ---------- #
             name = None
-
-            # 1) data-author attribute (fastest)
             if art.has_attr("data-author"):
                 name = art["data-author"].strip()
-
-            # 2) fallback CSS selectors (desktop & mobile skins)
             if not name:
                 elem = art.select_one(
                     ".message-name, .username--link, .username, [itemprop='name']"
                 )
                 if elem:
                     name = elem.get_text(strip=True)
-
-            # 3) skip if still unknown
             if not name:
                 continue
 
