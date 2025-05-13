@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Retigabine user-extraction (defensive version)
+Retigabine user-extraction (defensive v1.1)
 Thread: https://www.tinnitustalk.com/threads/retigabine-trobalt-potiga-—-general-discussion.5074/
 
 Dependencies:
@@ -31,13 +31,9 @@ HEADERS = {
 
 # -------------------------------------------------------------------------
 def iter_pages():
-    """
-    Generator that yields raw HTML for every page in the thread.
-    Stops when XenForo returns an error page or no <article> tags are found.
-    Handles Cloudflare with cloudscraper.
-    """
-    scraper = cloudscraper.create_scraper()      # <-- NO headers kwarg
-    scraper.headers.update(HEADERS)              # <-- add headers here
+    """Yield raw HTML for every page until XenForo stops returning posts."""
+    scraper = cloudscraper.create_scraper()
+    scraper.headers.update(HEADERS)
 
     page = 1
     while True:
@@ -54,7 +50,7 @@ def iter_pages():
 
         yield resp.text
         page += 1
-        time.sleep(1)                            # be polite: 1 request/sec
+        time.sleep(1)            # 1 req/s politeness
 
 # -------------------------------------------------------------------------
 DRUG_NAMES = r"(?:retigabine|trobalt|potiga|rtb)"
@@ -67,7 +63,6 @@ POS_RE = re.compile(
     rf"{DRUG_NAMES}",
     flags=re.I,
 )
-
 NEG_RE = re.compile(
     rf"\b(i\s+have\s+not|i\s+haven['’]?t|i\s+never|i\s+won['’]?t|"
     rf"i\s+will\s+not|i\s+don['’]?t|i\s+do\s+not)\b"
@@ -77,7 +72,7 @@ NEG_RE = re.compile(
 )
 
 def mentions_use(text: str) -> bool:
-    """True if the post indicates the author actually used retigabine."""
+    """True if the post shows the author actually used retigabine."""
     if NEG_RE.search(text):
         return False
     return bool(
@@ -92,20 +87,33 @@ def extract_users():
     for html in iter_pages():
         soup = BeautifulSoup(html, "html.parser")
         for art in soup.select("article"):
-            # strip quoted text so quotes don't trigger false positives
+            # strip quoted text to avoid false positives
             for q in art.select("blockquote"):
                 q.decompose()
             body = art.get_text(" ", strip=True)
             if not body or not mentions_use(body):
                 continue
 
-            author = (
-                art.get("data-author") or
-                art.select_one(".message-name,.username")
-            )
-            name = getattr(author, "text", author).strip()
-            if name:
-                users[name] = None
+            # ---------- robust author extraction ---------- #
+            name = None
+
+            # 1) data-author attribute (fastest)
+            if art.has_attr("data-author"):
+                name = art["data-author"].strip()
+
+            # 2) fallback CSS selectors (desktop & mobile skins)
+            if not name:
+                elem = art.select_one(
+                    ".message-name, .username--link, .username, [itemprop='name']"
+                )
+                if elem:
+                    name = elem.get_text(strip=True)
+
+            # 3) skip if still unknown
+            if not name:
+                continue
+
+            users[name] = None
     return list(users)
 
 # -------------------------------------------------------------------------
